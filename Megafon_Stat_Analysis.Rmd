@@ -1,0 +1,345 @@
+---
+title: "Megafon Statistical Analysis"
+output:
+  html_document:
+    df_print: paged
+---
+
+Loading the libraries:
+
+```{r}
+library(ggplot2)
+library(DescTools)
+library(gplots)
+options(warn = -1)
+```
+
+
+Importing the data:
+
+```{r}
+df = read.csv("megafon_clean.csv", sep=";", dec=".")
+head(df)
+```
+
+## Brief EDA
+
+Dataframe dimensions:
+
+```{r}
+dim(df)
+```
+
+The dataframe contains 3058 observations of 11 features.
+
+Dataframe structure:
+
+```{r}
+str(df)
+```
+
+Let us check the first question for the presence of invalid responses:
+
+```{r}
+sort(unique(df$q1))
+```
+
+Construct a barplot of frequencies of different responses to the first question:
+
+```{r}
+barplot(table(df$q1), # frequency table as input
+        main = "Count per group",
+        las = 2, # expand the axes, 0 by default
+        col = "darkseagreen2",
+        cex.names = 0.65, # font size, 1 by default
+        ylab = "Count")
+```
+
+It is interesting to note that most people gave either 1 or 10 as a response. There is no clear trend for the answers in between in terms of the number of respondents.
+
+Analyzing the complaint distribution in the second question:
+
+```{r echo = T, results = "hide"}
+dist_vec = vector(mode = "numeric", length = 8)
+for (response in df$q2) {
+  if (response == "") {
+    dist_vec[8] = dist_vec[8] + 1
+  } else {
+    split_res = strsplit(response, ",")
+    for (item in split_res) {
+      int_item = strtoi(item)
+      if (int_item %in% 1:7) {
+        dist_vec[int_item] = dist_vec[int_item] + 1
+      }
+    }
+  }
+}
+```
+
+```{r}
+dist_vec
+```
+
+```{r}
+barplot(dist_vec,
+        main = "Count per response",
+        las = 2,
+        col = "darkseagreen2",
+        cex.names = 0.65,
+        ylab = "Count",
+        names.arg = c(1:7, "None"))
+```
+
+The largest group of respondents did not state any complaints. Among the stated complaints, however, the most popular ones were 1 (calls not going through/being cut off during calls), 3 (bad service quality in buildings, shopping centers, etc.), and 4 (slow mobile internet). At this stage already we can hypothesize that these complaints are more essential than wait time during calls and long video loading times.
+
+Let us plot a histogram of technical features to form an initial impression about their distribution:
+
+```{r, fig.width = 20, fig.height = 20}
+
+par(mfrow=c(4,2))
+names = c("Total Traffic", "Downlink Throughput", "Uplink Throughput",
+          "Downlink TCP Retransmission Rate", "Video Streaming Download Throughput",
+          "Video Streaming xKB Delay", "Web Page Download Throughput", "Web Average TCP RTT")
+for (i in 4:11) {
+  data = df[, i]
+  hist(data, main = names[i - 3], col = "darkseagreen2", xlab = "Value", 
+       cex.lab = 1.5, cex.axis = 2, cex.main = 2)
+}
+```
+
+The distributions of all technical features are similar in the sense that the largest part of the data is close to 0 with a long tail to the right. It is surprising as some features are classified as "the larger, the better" while others are of the opposite type. One way or another, it is difficult to hypothesize anything from the feature distribution only, so we will form statistical hypotheses in the next section and later test them with relevant tools.
+
+## Hypotheses
+
+* Group A - the group of people who gave 9-10 as a response to the first question. Group B - the group of people who gave 1-8 as a response to the first question. Hypothesis - the quality of service for groups A and B is different in a statistically significant way based on the technical features considered in the dataset.
+
+* Group A - the group of people who gave 5-8 as a response to the first question. Group B - the group of people who gave 1-4 as a response to the first question. Hypothesis - the quality of service for groups A and B is different in a statistically significant way based on the technical features considered in the dataset.
+
+* Group A - the group of people who stated no complaints in the second question. Group B - the group of people who stated at least one complaint in the second question. Hypothesis - the quality of service for groups A and B is different in a statistically significant way based on the technical features considered in the dataset.
+
+We will look at each of the hypotheses separately and conduct relevant statistical tests to analyze for which features the null hypothesis can be rejected and for which it cannot. As a result of the analysis, we will obtain the most statistically significant features which make the considered groups distinguishable with a greater probability.
+
+### Hypothesis 1
+
+Create an additional column in the dataframe with group 0 (responded 9-10 in the first question) and 1 (responded 1-8):
+
+```{r}
+group_labels = vector(length = length(df$q1))
+for (i in 1:length(group_labels)) {
+  if (df$q1[i] > 8) {
+    group_labels[i] = 0
+  } else {
+    group_labels[i] = 1
+  }
+}
+unique(group_labels)
+```
+
+```{r}
+df$group_labels = group_labels
+table(group_labels)
+```
+
+Form a separate dataframe with the technical features and group labels for convenience:
+
+```{r}
+df1 = df[, 4:12]
+head(df1)
+```
+
+Using technical features as variables and the group labels as a target, build a logistic regression model:
+
+```{r}
+logreg1 <- glm(group_labels ~ ., data = df1, family = binomial(link="logit"))
+summary(logreg1)
+```
+
+On the 5% significance level, we can only reject the null hypothesis for three variables: `downlink_throughput`, `video_delay`, and `web_average_rtt`. Despite the fact that few users stated long video loading time as a complaint in the second question, it has the lowest p-value. It might mean that it is one of the key factors separating the 9-10 and 1-8 groups. We will investigate the difference between 1-4 and 5-8 (in response to the first question) groups in the next section.
+
+### Hypothesis 2
+
+Create a copy of the original dataframe keeping only the respondents who responded 1-8 in the first question:
+
+```{r}
+df2 = subset(df, q1 <= 8)
+dim(df2)
+```
+
+Create an additional column in the new dataframe with group 0 (response 5-8) and 1 (response 1-4):
+
+```{r}
+group_labels2 = vector(length = length(df2$q1))
+for (i in 1:length(group_labels2)) {
+  if ((df2$q1[i] >= 5) & (df2$q1[i] <= 8)) {
+    group_labels2[i] = 0
+  } else if ((df2$q1[i] >= 1) & (df2$q1[i] <= 4)) {
+    group_labels2[i] = 1
+  }
+}
+unique(group_labels2)
+```
+
+```{r}
+length(group_labels2)
+```
+
+Let us check the intersection of confidence interval for the 2 groups based on all the technical features:
+
+```{r}
+df2$group_labels2 = group_labels2
+table(df2$group_labels2)
+```
+
+```{r}
+tech_cols = colnames(df2)[4:11]
+tech_cols
+```
+
+Write a function to plot confidence intervals:
+
+```{r}
+plot_conf_int = function(col_index, col_name) {
+  zero_data = df2[df2$group_labels2 == 0, col_index]
+  one_data = df2[df2$group_labels2 == 1, col_index]
+  conf.int1 = MeanCI(x = zero_data, conf.level = 0.95)
+  conf.int2 = MeanCI(x = one_data, conf.level = 0.95)
+  plotCI(x = c(conf.int1[1], conf.int2[1]),
+       li = c(conf.int1[2], conf.int2[2]), 
+       ui = c(conf.int1[3], conf.int2[3]),
+       xlim = c(0, 3), ylab = "Confidence interval ranges",
+       xlab = "", main = col_name)
+}
+```
+
+Now, plot confidence intervals for all technical features by applying the function above, 2 features at a time:
+
+```{r, fig.height = 10, fig.width = 10}
+par(mfrow = c(1, 2))
+plot_conf_int(4, names[1])
+plot_conf_int(5, names[2])
+```
+
+```{r, fig.height = 10, fig.width = 10}
+par(mfrow = c(1, 2))
+plot_conf_int(6, names[3])
+plot_conf_int(7, names[4])
+```
+
+```{r, fig.height = 10, fig.width = 10}
+par(mfrow = c(1, 2))
+plot_conf_int(8, names[5])
+plot_conf_int(9, names[6])
+```
+
+```{r, fig.height = 10, fig.width = 10}
+par(mfrow = c(1, 2))
+plot_conf_int(10, names[7])
+plot_conf_int(11, names[8])
+```
+
+We see in the visualizations that confidence intervals do not intersect for three variables: `Downlink TCP Retransmission Rate`, `Video Streaming Download Throughput`, and `Web Average TCP RTT`. Therefore, these factors affect the transition between low and medium band in the first question most. We will investigate the difference between the groups of people who stated no complaints and those who stated at least one complaint in the second question.
+
+
+### Hypothesis 3
+
+Create an additional column in the dataframe with the labels `TRUE` (1 or more complaints stated) and `FALSE` (no complaints stated):
+
+```{r}
+group_labels3 = vector(length = length(df$q2))
+for (i in 1:length(group_labels3)) {
+  if (df$q2[i] == "") {
+    group_labels3[i] = FALSE
+  } else {
+    group_labels3[i] = TRUE
+  }
+}
+unique(group_labels3)
+```
+
+```{r}
+df$group_labels3 = group_labels3
+table(df$group_labels3)
+```
+
+It is fairly surprising that most of the respondents did not state any complaints based on the information obtained in the EDA. On the other hand, it is rather common for survey respondents to skip questions involving specifying particular complaints.
+
+Let us investigate which technical factors are most distinguishable for the two considered groups. We will create a function that applies the Bootstrap method to control and test groups and calculates the corresponding p-value:
+
+```{r}
+apply_bootstrap = function(col_index, col_name) {
+  # splitting the data into control and test groups
+  control = df[df$group_labels3 == FALSE, col_index]
+  test = df[df$group_labels3 == TRUE, col_index]
+  
+  # finding the group means
+  p_control = mean(control)
+  p_test = mean(test)
+  initial_difference = p_test - p_control
+  
+  set.seed(1000)
+  N = 10000
+  
+  # creating and filling the differences vector
+  differences = rep(NA, N)
+  
+  for (i in 1:N) {
+    s1 = sample(control, replace = TRUE)
+    s2 = sample(test, replace = TRUE)
+    p1 = mean(s1)
+    p2 = mean(s2)
+    p_diff = p2 - p1
+    differences[i] = p_diff
+  }
+  
+  # centering the differences
+  differences_centered = differences - mean(differences)
+  
+  # finding the p-value
+  p_value = sum(differences_centered > initial_difference) / N
+  
+  # plotting the distribution histogram
+  hist(differences_centered, 
+     main = sprintf("%s (p-value: %f)", col_name, p_value),
+     xlab = "Centered Difference",
+     col = "darkseagreen2")
+  abline(v = initial_difference, col = "hotpink2", lwd = 3)
+}
+```
+
+Now we will apply the function above to each available technical feature:
+
+```{r, fig.width = 10, fig.height = 5}
+par(mfrow = c(1, 2))
+apply_bootstrap(4, names[1])
+apply_bootstrap(5, names[2])
+```
+
+```{r, fig.width = 10, fig.height = 5}
+par(mfrow = c(1, 2))
+apply_bootstrap(6, names[3])
+apply_bootstrap(7, names[4])
+```
+
+```{r, fig.width = 10, fig.height = 5}
+par(mfrow = c(1, 2))
+apply_bootstrap(8, names[5])
+apply_bootstrap(9, names[6])
+```
+
+```{r, fig.width = 10, fig.height = 5}
+par(mfrow = c(1, 2))
+apply_bootstrap(10, names[7])
+apply_bootstrap(11, names[8])
+```
+
+We see from the visualizations that `Downlink TCP Retransmission Rate`, `Video Streaming xKB Delay`, and `Web Average TCP RTT` have the lowest p-value. The null hypothesis can be rejected for those features at the 5% significance level. Two out of three variables coincide with the ones found in the analysis for the 2nd hypothesis, supporting the suggestion of their relative importance for Megafon users.
+
+## Conclusions
+
+We could already suggest that the responses to the first question were quite polarized at the EDA stage. It was especially noticeable that 1 and 10 were the most popular responses. It is also supported by the fact that two out of three variables that distinguish the groups with responses 1-4 and 5-8 in the first question, and whether complaints were stated or not in the second question, are the same technical features. In particular, they are `Downlink TCP Retransmission Rate` and `Web Average TCP RTT`. Thus, one can suggest with a fair degree of confidence that long internet page loading time is one of the key reasons of customer dissatisfaction.
+
+Apart from that, it was identified that factors like `downlink_throughput`, `video_delay`, and again `web_average_rtt` are the most important to take the band from medium to high. It supports that Megafon should invest more time and effort into improving those characteristics. Nevertheless, a significant part of respondents did not state any complaints in the second question which might have been partially caused by the design of the survey. Obtaining more detailed complaints and user recommendations could potentially lead to getting more accurate results.
+
+
+
+
